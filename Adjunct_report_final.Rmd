@@ -1,0 +1,1403 @@
+---
+title: "Adjunct Instruction at Salt Lake Community College"
+author: | 
+  | Jeff Webb
+date: \today
+header-includes:
+    - \usepackage{fancyhdr}
+    - \pagestyle{fancy}
+    - \usepackage{booktabs}
+
+output:
+  bookdown::pdf_document2:
+    toc: no
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(results='asis',echo = FALSE, message=F, warning=F,cache=TRUE)
+
+# packages and data
+
+library(tidyverse)
+library(knitr)
+library(kableExtra) 
+library(ggthemes)
+
+
+d <- read.csv("TASK0019261 Adjuct Instructor Research-2.txt",
+              header=T, sep="|", stringsAsFactors = F)
+
+names(d) <- tolower(names(d))
+
+# Create class and unique class id variables
+d$class <- paste0(d$course_subject, d$course_number)
+d$unique_classID <- paste0(d$course_subject, d$course_number,
+                           d$course_section, d$term_code)
+
+# add total enrollment in a particular class to the main data 
+d <- d %>%
+  group_by(class) %>%
+  summarize(total_enrollment = n()) %>%
+  left_join(y=d, by="class")
+
+# add total enrollment in a particular section to the main data
+d <- d %>%
+  group_by(unique_classID) %>%
+  summarize(total_section_enrollment = n()) %>%
+  left_join(y=d, by="unique_classID")
+
+# Create a new data frame  by filtering and adding features
+subd <- d %>%
+  filter(school != "SAT" &
+           academic_vocational=="Academic Course" &
+           full_time_ind != "U" &
+           instruction_type != "Lab" & 
+           instruction_type != "NOT USED - Lab" &
+           substr(term_code, 5,6) != "50" & 
+           final_grade != "MC" &
+           final_grade != "NM" &
+           final_grade != "NS" &
+           final_grade != "MG" &
+           final_grade != "P" &
+           final_grade != "") %>%
+  mutate(grad_term = substr(slcc_graduation_term, 1, 6),
+         inst_status = ifelse(full_time_ind == "Y", "Full-time", "Adjunct"),
+         online = ifelse(campus=="SLCC Online", "online", "in-person"),
+         course_level = ifelse(course_number < 1000, "Developmental", 
+                               ifelse(course_number >= 1000 & course_number < 2000, 
+                                      "1000 level", "2000 level")),
+         course_level = factor(course_level, 
+                               levels = c("Developmental", "1000 level", "2000 level")),
+         term = ifelse(substr(term_code, 5,6)=="30", "Summer",
+                       ifelse(substr(term_code, 5,6)=="40", "Fall", "Spring")),
+         term = factor(term, levels = c("Summer", "Fall", "Spring")),
+         prior_ug_gpa_ch = as.character(cut(prior_ug_gpa, breaks = quantile(prior_ug_gpa, probs = seq(0,1, .1), na.rm=T),
+                                                   include.lowest = T)),
+         prior_ug_credits_ch = as.character(cut(prior_ug_credits, breaks = quantile(prior_ug_credits, probs = seq(0,1, .1), na.rm=T),
+                                                   include.lowest = T)))
+         
+
+subd$prior_ug_gpa_ch[is.na(subd$prior_ug_gpa_ch)] <- "none"
+subd$prior_ug_credits_ch[is.na(subd$prior_ug_credits_ch)] <- "none"
+
+# reverse engineer official credits per course
+subd <- subd %>%
+  group_by(class) %>%
+  mutate(course_credits = median(credits_earned, na.rm = T))
+
+# letter grade numeric equivalents
+grades <- data.frame(final_grade = c("A", "A-","B+","B","B-","C+","C",
+                                     "C-","D+","D","D-", "E","W","I"),
+                     alt_grade= c(4,3.7, 3.4,3,2.7,2.4,2,1.7,1.4,1,.7,0,0,0))
+
+# add numeric equivalents to subd data frame
+subd <- subd %>%
+  left_join(grades, by= "final_grade")
+
+# create pass variable set at 3
+subd$pass <- ifelse(subd$alt_grade >= 3, 1, 0)
+
+# Create adjunct groups
+# table(d$term_code, d$academic_year)
+
+terms <- data.frame(terms = unique(subd$term_code)) %>% arrange(terms)
+
+instructors <- subd %>%
+  filter(inst_status == "Adjunct") %>%
+  group_by(instructor_id) %>%
+  tally %>%
+  dplyr::select(instructor_id)
+
+instructor_df <- expand.grid(term_code = terms$terms, instructor_id = instructors$instructor_id)
+
+groups <- subd %>%
+  filter(inst_status=="Adjunct") %>%
+  group_by(instructor_id, term_code) %>%
+  tally %>%
+    dplyr::select(-n) %>%
+  arrange(instructor_id, term_code) %>%
+  group_by(instructor_id) %>%
+   mutate(n = seq_along(instructor_id)) %>%
+  right_join(instructor_df, by = c("instructor_id", "term_code")) %>% 
+  group_by(instructor_id) %>%
+  mutate(adjunct_group = ifelse(all(is.na(head(n, 2))) & all(is.na(tail(n, 2))) & max(n, na.rm=T)==1, "Short term",
+                                ifelse(all(is.na(head(n, 2))) & all(is.na(tail(n, 2))) & max(n, na.rm=T) > 1 & max(n, na.rm=T) < 6, "Medium term",
+                                       ifelse(max(n, na.rm=T) > 5, "Long term", NA)))) %>%
+  na.omit %>%
+  filter(adjunct_group == "Short term" |
+           adjunct_group=="Medium term" & n > 1 |
+         adjunct_group =="Long term" & n > 5,
+         !(term_code %in% c(201140, 201220,  201820, 201740))) %>%
+  rename(adjunct_group_n = n)
+
+subd <- subd %>%
+  left_join(groups, by = c("instructor_id", "term_code"))
+
+
+```
+
+```{r include = F}
+
+# Plotting functions
+
+theme_slcc <- function(base_size=12) {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2)),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(0, unit="cm"),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+      
+}
+
+scale_fill_slcc <- function(...){
+      library(scales)
+      discrete_scale("fill","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+scale_colour_slcc <- function(...){
+      library(scales)
+      discrete_scale("colour","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+colors=c("#00ABE1", "#FFCD00", "#003865", "#833921")
+
+```
+
+```{r}
+
+# ipeds data on ft/pt counts
+# This data was downloaded from ipeds.
+# filters:  38 institutions, > 20,000 students, Asociates granting only
+
+ipeds <- read.csv("ipeds_ft_pt_counts.csv")
+
+```
+
+```{r include=F}
+
+# summary of adjunct teaching in 17-18
+perc_faculty <- d %>%
+  filter(academic_year=="2017-2018",
+         academic_vocational=="Academic Course") %>%
+  group_by(instructor_id, full_time_ind) %>%
+  tally %>%
+  #filter(full_time_ind != "U") %>%
+  group_by(full_time_ind) %>%
+  summarize(count= n()) %>%
+  mutate(perc= round(count/sum(count),2))
+
+percent_students_taught <- d %>%
+  filter(academic_year=="2017-2018",
+         academic_vocational=="Academic Course") %>%
+  group_by(instructor_id, full_time_ind) %>%
+  tally %>%
+  group_by(full_time_ind) %>%
+  summarize(count= sum(n)) %>%
+  mutate(perc= round(count/sum(count),2))
+
+# perc_faculty 
+# percent_students_taught
+
+```
+
+# Introduction
+
+In 1969 part-time instructors \footnote{In this paper "part-time" is treated as synonymous with "adjunct" and used to denote instructors who are not full-time, hence not tenured or tenure track.} made up 27% of the total faculty in US community colleges; in 1989 the number had climbed to 52% and was approaching 70% by 2003 (Jaeger 2008).  During the 2016-2017 academic year at Salt Lake Community College (SLCC) nearly 80% of the faculty teaching academic classes were part-time. Such heavy reliance on adjunct teaching naturally prompts a question: Does instruction by adjunct faculty influence student performance differently than instruction by full-time faculty?  Recent research on this question conducted by the Community College Research Center (CRCC) at Columbia University concluded that "adjuncts have positive impacts on introductory course grades but negative impacts on subsequent course enrollment and performance" (Ran 2017).  The purpose of the study described here was to investigate and expand upon the CRCC's findings:  do they hold true at SLCC? 
+
+It should be emphasized at the outset that observational studies like this one, and the CRCC study, have important limitations.  The CCRC research suggests, for example, that adjuncts have "positive impacts" on introductory course grades. However, without an independent measure of student learning this could just mean that adjuncts graded more easily than full-time instructors, not that students of adjuncts learned more and therefore deserved higher grades.  They might well have learned less.  But how would we know?  Without additional information, it is difficult or impossible to distinguish between grade effects resulting from differences in grading practice and grade effects resulting from differences in teaching quality.  It is, moreover, difficult with the data available to provide a complete account of other complex performance outcomes like retention and graduation.
+
+<!-- Moreover, attributing differences in retention and graduation to the instructor's employment status is also problematic because these outcomes may be influenced by grades (many community college students depend on loans and grants, for example, and financial aid eligibility is based on GPA), not to mention the fact that most students took courses simultaneously from both adjunct and full-time instructors.    Complicating the study of both retention and graduation is  the fact that both phenomena are poorly understood,  and that the data available for studying them is inadequate. -->
+
+Acknowledging these limitations, we focused specifically on the following research questions:
+
+1. *What was the scope of adjunct teaching at SLCC?* 
+2. *Did student grades vary by faculty employment status?*  Ran (2017) reported that students in introductory courses taught by adjuncts received higher grades compared to those in courses taught by full-time instructors, after correcting for a variety of factors.  Were such grade differences observable at SLCC across all courses?  And, if so, did they vary significantly by other course features?
+3. *Was retention into the next semester different for students who took courses largely from adjunct instructors compared to those who took courses largely from full-time instructors?* Ran (2017) reported lower  rates of subsequent course enrollment in the same subject area for the former group.   In this study we propose to ask a slightly different question  about retention into the next semester.
+4.  We might expect that if retention rates were lower for students of adjunct instructors then graduation rates would be too.  *Did students who had a high percentage of adjunct instructors, either in the first year or beyond, graduate at lower rates?*
+5.  *If students took core courses, such as English 1010 or Math 1010, from an adjunct instructor was a subsequent performance difference---in terms of grades or enrollment---in the following course in the sequence?* 
+6.  The School of Arts, Communication and Media (SACM) conducted a survey of adjunct instructors.  *Were there items in the survey results that shed light on the quantitative results?*
+
+# Literature Review
+
+Community colleges and universities have increasingly hired adjunct professors to teach entry-level classes. While, as noted, 52% of community college faculty worked part time in 1989 (Jaeger 2008), that number had jumped to nearly 70% in the 2000s, compared to only 32% at four-year colleges, according to a 2007 U.S. Department of Education report (Wilson 2010). The reason for these increases was financial: part-time faculty can cost up to 80% less than full-time faculty (Jaeger & Eagan 2011). 
+
+The employment conditions of adjunct professors can be challenging, jeopardizing the delivery of quality courses, productive interactions with students, and accurate grading. Landrum (2009) found that part-time faculty in a large 4-year university were significantly less likely to have an office on campus or a campus email address. The same study found that full-time instructors had, on average, almost double the years of teaching experience compared to part-time faculty (Landrum 2009). Part-time faculty tend to be less engaged in campus culture and less available to students (Jaeger & Eagan 2009). They are also paid less: on average \$2,000-$3,000 per class, which is approximately four times less than their full-time counterparts (Greenberg 2014).
+
+Adjunct professors may also have less academic freedom and feel more hostage to student and administrative opinions than full-time professors simply because they are hired on a per-class basis and their job security can be contingent on those opinions (Wilson 2010). 
+
+Research findings on the impact of instruction by adjuncts on student retention and long-term success are limited and somewhat mixed. As noted, Ran (2017)  found that adjuncts have positive impacts on grades earned in introductory courses, but negative impacts on subsequent course enrollment and performance. Those negative impacts were greater among adjuncts hired temporarily compared to adjuncts with long-term contracts.  In contrast, Bettinger and Long (2010) found that taking more classes from adjunct professors may have actually increased the number of subsequent classes students take in a given field, especially for fields closely tied to a profession.  This phenomenon could be explained by the tendency of adjuncts to have professional industry experience (Bettinger & Long 2010).
+
+# Executive Summary
+
+**Results**:
+
+1. Adjuncts made up about 80% of the academic faculty at SLCC and taught about 62% of FTE in each academic year.  
+2. Adjuncts awarded modestly higher grades, even after adjusting for a variety of other factors in a statistical model.  But the average grade difference varied strongly by course, with some of the larger courses showing little difference. This may point to a lack of shared grading standards between adjuncts and full-time instructors in some departments and courses.
+3.  Students who took courses from adjuncts  were no less likely to  persist into the next semester or to graduate.
+4.  Student performance in a subsequent course was no  different for students who took the first course from an adjunct instructor  compared to those who took the first course from a full-time instructor.  The two course sequences examined were English 1010 to English 2010 and Math 1010 to Math 1050. However, while the persistence of students to a higher English course was not associated with instructor employment status in English, in Math it was:  students who took Math 1010 from adjunct instructors were more likely to repeat Math 1010 or not continue on to another QL course.
+5. A survey of adjunct instructors conducted by  the School of Arts Communication and Media found that two of the most commonly identified self-reported challenges for adjuncts to delivering effective instruction at SLCC were last-minute scheduling changes and lack of prep time, and poor communication from administration.
+
+**Recommendations**:
+
+- Reliance on adjunct instruction in some courses seems too high. Math and English have managed to bring the percentage of FTE taught by adjuncts down to near the college average. Other departments should strive to follow suit. Rather than essentially outsourcing the teaching of large introductory courses to adjuncts, full-time faculty should engage with adjuncts in the  shared enterprise of teaching these courses. 
+- Use course specific grade differences by employment status  to guide grade norming exercises among faculty,  focusing especially on those courses that deviate significantly from the average. Shared exams should be considered.
+- Work to ensure that adjunct faculty have sufficient time for course preparation prior to the beginning of classes. This is a courtesy to adjunct instructors, certainly, but, perhaps more importantly, to students.
+
+
+# Data and Data Modeling
+
+The dataset for this research was provided by SLCC's Office of Institutional Research and Reporting (IRR) and consisted in one row per student course enrollment from fall 2011 through spring 2018, for a total of 20 academic terms.  The decision was made at an inaugural meeting on this research project (May, 2018) to concentrate on academic classes only and to exclude vocational enrollments as well as concurrent enrollments.  The following additional filters and variable transformations were used:
+
+- Only students in VFA Fall cohorts were included in the data.  (These students are considered new students according to the definition supplied by the Voluntary Framework of Accountability. See https://vfa.aacc.nche.edu/Documents/VFAMetricsManual.pdf.  For technical reasons, a student's first term at SLCC may not always be identical to the VFA cohort term.) As a consequence, only a subset of student course enrollments were represented in this dataset.
+- Lab courses were removed.
+- SAT courses were removed, as were any courses with a term code ending in 50.
+- Final grades not in the A - E range (with the exception of I and W) were removed.  For some modeling tasks (identified below) the remaining grades were converted into their numeric equivalents. In those cases, W, I and E were all converted into 0. I chose not to use GPA Quality Points because these values do not always reflect the grades that were actually awarded in a class.
+
+```{r include = F}
+names(grades) <- c("Letter Grade", "Numeric Grade") 
+kable(grades, caption = "\\label{tab:grades}Letter to numeric grade conversion",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+  kable_styling(latex_options = c('striped', 'hold_position')) %>%
+  row_spec(0, bold = T)
+```
+
+- Academic years 2011-2012 and 2017-2018 were incomplete and have been excluded from summaries by academic year.
+- Online enrollments were identified by campus = SLCC Online. These counts were nearly identical to those of "Online" or "Online Lecture" in the "instruction_type" field. "Online Lecture" appears to be a now-discontinued code for for online courses that was nevertheless used in 2011-2012 and 2012-2013.
+
+```{r include = F}
+table(subd$campus, subd$instruction_type)
+```
+
+
+The definition of adjunct faculty was clearly crucial for this research.  The CRCC research mentioned above (Ran 2017) distinguished between four types of faculty:  tenured instructors, tenure-track instructors, long-term adjuncts, and short-term adjuncts.  Long-term adjuncts were defined as those instructors who were not tenured but had long term contracts.  According to this classification, SLCC adjuncts would be short-term adjuncts and SLCC full-time instructors would be tenured or tenure-track instructors.  At SLCC all adjuncts are short-term, with contracts  renewed at the beginning of each academic term.  Thus, the comparison structuring this research was between part-time or adjunct instructors at SLCC and full-time instructors.
+
+Additional data sources consisted in (1)  data on the numbers of part-time versus full-time faculty at American community colleges from IPEDS, (2) a survey of adjunct instructors conducted by the School of Arts, Communications and Media.
+
+Information on the variables used for statistical models is detailed below.
+
+# Results
+
+## Descriptive Statistics
+
+### IPEDS data on full-time and part-time community college instructors
+
+The percentage of part-time faculty at SLCC was around 80%, though the exact counts of instructors by employment status (and the corresponding percentages) depended on the data source. SLCC submits an HR report to IPEDS for every Fall term. The numbers in that report did not agree with those in the data source for this research, primarily because the data used for this  report excluded vocational courses.  Table \ref{tab:ipeds} summarizes the number of full-time and part-time instructors by data source.
+
+```{r}
+
+data.frame(Data = c("IPEDS","SLCC Institutional Research","IPEDS","SLCC Institutional Research","IPEDS","SLCC Institutional Research"),
+             Term = c("Fall 2014", "Fall 2014","Fall 2015", "Fall 2015","Fall 2016","Fall 2016"),
+           Fulltime = c(343, 287, 339,300, 335, 294),
+           Parttime = c(1155, 1064, 1271, 1049, 1242, 1040)) %>%
+  dplyr::select(`Data source`=Data, Term, `Full-time`= Fulltime, `Part-time`=Parttime) %>%
+  mutate(Total = `Full-time` + `Part-time`,
+         `Percent part-time` = round(`Part-time`/Total*100,1)) %>%
+  kable(caption = "\\label{tab:ipeds}Full-time vs. Part-time SLCC faculty by data source, Fall terms 2014 - 2016",
+       format = "latex", booktabs = T, linesep = "", escape = F) %>%
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+```
+
+IPEDS data offers a way to compare the composition of SLCC's faculty with that of similar community colleges in the US, defined as those in large or medium urban or suburban areas enrolling more than 20,000 students in Fall term.  The comparison group, thus defined, included 38 colleges.  SLCC had a higher percentage of part-time faculty than the average in the comparison group, but was also not the highest.  See Figure \ref{fig:ipeds} for a comparison of SLCC's percentage to the distribution for similar schools. The proportion of adjunct instructors at SLCC, based on these data, has remained relatively stable from 2014 - 2016. 
+
+```{r fig.cap="\\label{fig:ipeds}Percentage of part-time faculty at 38 large community colleges, 2015 - 2016."}
+
+# fig:ipeds
+ipeds %>%
+  mutate(`2016` = pt_2016/(pt_2016 + ft_2016)*100,
+         `2015` = pt_2015/(pt_2015 + ft_2015)*100,
+          `2014` = pt_2014/(pt_2014 + ft_2014)*100) %>%
+  dplyr::select(instnm, `2016`,`2015`,`2014`) %>%
+  gather(year, pt_proportion, -instnm) %>%
+  group_by(year) %>%
+  mutate(slcc = pt_proportion[instnm=="Salt Lake Community College"]) %>%
+  ggplot(aes(pt_proportion)) +
+  geom_histogram(bins=10, fill = colors[1])+
+  geom_vline(aes(xintercept = slcc), col=2, lty = 2) +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(x = "Percentage of part-time faculty",
+       #title = "Percentage of part-time faculty at 38 large community colleges",
+       subtitle = "SLCC percentage indicated by the red dashed line",
+       caption = "Data source:  IPEDS") +
+  theme_slcc()
+
+
+```
+
+## Demographic characteristics of students and instructors
+
+Overall there were `r length(unique(subd$student_id))` unique students in the the dataset with `r nrow(subd)` enrollments.  Table \ref{tab:students} summarizes demographic information for students included in the study.  Table \ref{tab:instructors} summarizes demographic information for instructors by employment status. Adjunct teachers were markedly more female and younger than full-time instructors.  
+
+
+
+```{r}
+# Student table
+# fixed characteristics 
+
+# Age
+age_table <- subd %>%
+  distinct(student_id, student_age_by_term) %>%
+  group_by(student_id) %>%
+  summarize(age = mean(student_age_by_term)) %>%
+  mutate(cat_age = ifelse(age >=10 & age<20, "[10-20)",
+                          ifelse(age >= 20 & age< 30, "[20-30)",
+                                 ifelse(age >=30 & age<40, "[30-40)",
+                                        ifelse(age >=40 &age <50, "[40-50)",
+                                               ifelse(age >=50 & age< 60, "[50-60)", 
+                                                      ifelse(age >=60 & age < 70, "[60-70)", ">70")))))),
+         cat_age = factor(cat_age, levels=c("[10-20)","[20-30)", "[30-40)", "[40-50)", "[50-60)", "[60-70)", ">70"))) %>%
+  group_by(cat_age) %>%
+  tally %>%
+  mutate(Percent = round(n/sum(n)*100,1))
+
+
+# Gender
+gender_table <-subd %>%
+  distinct(student_id, student_gender) %>%
+  group_by(student_gender) %>%
+  tally %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+
+# Ethnicity
+ethnicity_table <- subd %>%
+  distinct(student_id, student_ethnicity) %>%
+  group_by(student_ethnicity) %>%
+  tally %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+# total
+total_table <- subd %>%
+  distinct(student_id) %>%
+  tally
+
+student_table <- rbind(
+  
+  ethnicity_table %>%
+    unname %>% 
+    data.frame,
+  
+  gender_table %>%
+    unname %>% 
+    data.frame,
+  
+  age_table %>%
+    unname %>% 
+    data.frame) 
+
+names(student_table) <- c("", "Count", "Percent")
+
+student_table %>%
+  kable(caption = "\\label{tab:students}Student demographic information, Fall 2011 - Spring 2018",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+  kable_styling(latex_options = c('striped', 'hold_position')) %>%
+  group_rows("Ethnicity", 1, 9) %>%
+  group_rows("Gender", 10, 12) %>%
+  group_rows("Age", 13, 19) 
+  
+```
+
+
+
+```{r}
+# Instructor table
+# fixed characteristics
+
+inst_age_table <- subd %>%
+  distinct(instructor_id, inst_status,instructor_age) %>%
+  group_by(instructor_id, inst_status) %>%
+  summarize(age = mean(instructor_age)) %>%
+  mutate(cat_age = ifelse(age >=10 & age<20, "[10-20)",
+                          ifelse(age >= 20 & age< 30, "[20-30)",
+                                 ifelse(age >=30 & age<40, "[30-40)",
+                                        ifelse(age >=40 &age <50, "[40-50)",
+                                               ifelse(age >=50 & age< 60, "[50-60)", 
+                                                      ifelse(age >=60 & age < 70, "[60-70)", ">70")))))),
+         cat_age = factor(cat_age, levels=c("[10-20)","[20-30)", "[30-40)", "[40-50)", "[50-60)", "[60-70)", ">70"))) %>%
+  group_by(cat_age, inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1))
+
+#inst_age_table
+
+# Gender
+inst_gender_table <-subd %>%
+  distinct(instructor_id, inst_status, instructor_gender) %>%
+  group_by(instructor_gender,inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+# inst_gender_table
+
+
+# Ethnicity
+inst_ethnicity_table <-subd %>%
+  distinct(instructor_id, inst_status, instructor_ethnicity) %>%
+  group_by(instructor_ethnicity, inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+# inst_ethnicity_table 
+
+# total
+inst_total_table <- subd %>%
+  distinct(instructor_id, inst_status) %>%
+  group_by(inst_status) %>%
+  tally %>%
+  mutate(sum(n))
+
+# inst_total_table
+
+ instructor_table <- rbind(
+  inst_ethnicity_table %>%
+  filter(instructor_ethnicity!="Non-Resident Alien") %>%
+   gather(variable, value, -c(instructor_ethnicity, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame,
+  
+  inst_gender_table %>%
+  gather(variable, value, -c(instructor_gender, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame,
+  
+   inst_age_table %>%
+  gather(variable, value, -c(cat_age, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame) %>%
+  unname 
+
+
+instructor_table %>%
+  kable(caption = "\\label{tab:instructors}Instructor demographic information, Fall 2011 - Spring 2018",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+  kable_styling(latex_options = c('striped', 'hold_position')) %>%
+  group_rows("Ethnicity", 1, 8) %>%
+  group_rows("Gender", 9, 10) %>%
+  group_rows("Age", 11, 16) %>%
+  add_header_above(c(" ", "Count" = 1, "Percent" = 1, "Count" = 1, "Percent" = 1)) %>%
+  add_header_above(c(" ", "Adjunct" = 2, "Full-time" = 2))
+
+
+```
+
+
+### Scope of adjunct teaching at SLCC 
+
+We can distinguish between the percentage of faculty who are adjunct---headcount--- and the percentage of *student enrollments* taught by adjuncts, which we will express as FTE.\footnote{FTE is defined by attempted credits divided by 15.}   Full-time faculty taught about 62% of FTE while adjuncts taught about 38%.  Class sizes for adjuncts and full-time instructors were comparable, but adjuncts, being part time, taught fewer classes (on average, 2 per term) than did full-time faculty (4 per term). However, the percentage of student enrollments taught by adjuncts varied somewhat by term, with adjuncts teaching about 5% more FTE in summer term than in Fall or Spring terms.
+
+```{r include = F}
+
+# FTE by instructor type
+subd %>%
+  group_by(inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+  mutate( perc = round(FTE/sum(FTE)*100))
+
+# FTE by instructor type
+subd %>%
+  group_by(term, inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+  group_by(term) %>%
+  mutate( perc = round(FTE/sum(FTE)*100))
+```
+
+
+
+```{r include = F}
+# average classes per term
+subd %>%
+  group_by(instructor_id, inst_status, unique_classID, term_code) %>%
+ tally %>%
+  group_by(instructor_id, term_code, inst_status) %>%
+  summarize(count=n()) %>%
+  group_by(inst_status)%>%
+  summarize(avg_num_class = round(mean(count)) ) 
+```
+
+The percentage of FTE taught by adjuncts varied by department and course, as well as by delivery method, course level, and and term.  Figures \ref{fig:fte_dept} and \ref{fig:fte_course} summarize the FTE taught by adjuncts in the 20 largest departments and the 20 largest courses. FLM and HLAC had the highest percentage of FTE taught by adjuncts in these tables at 94% and 89% respectively, while COMM1010 and BIOL1090 were the classes with the highest percentage of students taught by adjuncts at 91% and 90% respectively.
+
+```{r fig.cap="\\label{fig:fte_dept}Percentage FTE taught by adjuncts in the 20 largest departments."}
+# subd %>%
+#   group_by(course_subject, inst_status) %>%
+#   summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+# group_by(course_subject) %>%
+#   mutate(`Percent FTE` = round(FTE/sum(FTE)*100)) %>%
+# arrange(desc(`FTE`)) %>%
+#   filter(inst_status=="Adjunct")%>%
+#    head(20) %>%
+#   dplyr::select(Subject=course_subject, FTE,`Percent FTE`) %>%
+#   kable(caption = "\\label{tab:dept}Percentage of FTE Taught by Adjuncts by Department",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+#   kable_styling(latex_options = c('striped', 'hold_position'))
+
+subd %>%
+  group_by(course_subject, inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+group_by(course_subject) %>%
+  mutate(`Percent FTE` = round(FTE/sum(FTE)*100)) %>%
+arrange(desc(`FTE`)) %>%
+  filter(inst_status=="Adjunct")%>%
+   head(20) %>%
+  dplyr::select(Subject=course_subject, FTE,`Percent FTE`) %>%
+  ggplot(aes(reorder(Subject, `Percent FTE`), `Percent FTE`)) +
+  geom_bar(stat="identity", fill= colors[1]) +
+  theme_slcc() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Subject") 
+  
+```
+
+
+```{r fig.cap="\\label{fig:fte_course}Percentage FTE taught by adjuncts in the 20 largest courses."}
+# subd %>%
+#   group_by(class, inst_status) %>%
+#   summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+# group_by(class) %>%
+#   mutate(`Percent FTE` = round(FTE/sum(FTE)*100)) %>%
+# arrange(desc(`FTE`)) %>%
+#   filter(inst_status=="Adjunct")%>%
+#    head(20) %>%
+#   dplyr::select(Course=class, FTE,`Percent FTE`) %>%
+#   kable(caption = "\\label{tab:dept}Percentage of Student Enrollments Taught by Adjuncts by Course",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+#   kable_styling(latex_options = c('striped', 'hold_position'))
+
+
+subd %>%
+  group_by(class, inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+group_by(class) %>%
+  mutate(`Percent FTE` = round(FTE/sum(FTE)*100)) %>%
+arrange(desc(`FTE`)) %>%
+  filter(inst_status=="Adjunct")%>%
+   head(20) %>%
+  dplyr::select(Course=class, FTE,`Percent FTE`) %>%
+  ggplot(aes(reorder(Course, `Percent FTE`), `Percent FTE`))+
+  geom_bar(stat="identity", fill= colors[1]) +
+  theme_slcc() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Course") 
+  
+```
+
+
+Adjuncts taught more FTE in person than they did online, compared to full-time instructors, teaching 64% of the in-person FTE but only 50% of the online FTE.
+
+```{r include = F}
+table(subd$instruction_type)
+
+subd %>%
+  mutate(online = ifelse(campus=="SLCC Online", 1,0)) %>%
+  group_by(inst_status, online) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+group_by(online) %>%
+  mutate(`Percent FTE` = round(FTE/sum(FTE)*100))
+```
+
+```{r include = F}
+#table(subd$instruction_type)
+
+subd %>%
+  group_by(course_level, inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+group_by(course_level) %>%
+  mutate(`Percent FTE` = round(FTE/sum(FTE)*100)) %>%
+  dplyr::filter(inst_status == "Adjunct") %>%
+  dplyr::select(`Course Level` = course_level, `Percent FTE`) %>%
+  kable(caption = "\\label{tab:course_lev}Percentage of Student Enrollments Taught by Adjuncts by Course Level")
+```
+
+Adjuncts also taught 67% of FTE at the 1000-2000 course level, 57% at the developmental level (< 1000), and an even smaller percentage---42%---at the 2000 level, while the percentage of general education FTE taught by adjuncts approached the overall average of 66%.  
+
+```{r include = F}
+subd %>%
+  group_by(gen_ed, inst_status) %>%
+  summarize(FTE = sum(course_credits, na.rm = T)/15) %>%
+group_by(gen_ed) %>%
+  mutate(`Percent FTE` = round(FTE/sum(FTE)*100))
+  
+```
+
+
+
+
+Finally, we categorized adjuncts into groups based on length of service:
+
+1. short-term: those who taught only 1 term and did not teach again.
+2. medium-term:  those who taught between 2 and 5 terms and did not teach again.
+3. long-term:  those who taught more than 5 terms.
+
+Identifying these groups was tricky, since the number of terms taught was partly an artifact of when data collection started.  For example, an instructor may have started teaching in 2003 and would therefore be erroneously represented as having taught only 1 term at the conclusion of the first term in the dataset, in this case Fall 2011.  To mitigate this problem (somewhat) we calculated the distribution of terms taught using the middle terms represented in the dataset, in the window from Summer 2012 to Summer 2017.  To be classified as a short-term adjunct required that the instructor taught just one term in the window and not before or after.  To be a medium-term adjunct required that the instructor taught between 2 and 5 terms in the window and not before or after.  To be a long term adjunct required that the instructor taught 6 or more terms at any time.
+
+Table \ref{tab:groups} presents the number of adjunct teachers in each group along with a summary of their tenure at SLCC during the 20 terms represented in the data.  The majority were long-term adjuncts according to the above definitions.
+
+
+```{r}
+
+
+subd %>% 
+  filter(!is.na(adjunct_group)) %>%
+  mutate(n = adjunct_group_n) %>%
+  group_by(`Adjunct group` = adjunct_group) %>%
+  summarize(`Minimum terms` = min(n),
+            `Maximum terms` = max(n),
+            `Average terms` = round(mean(n),1),
+            Count = length(unique(instructor_id))) %>%
+  mutate(Percent = round(Count/sum(Count)*100, 1),
+         `Adjunct group` = factor(`Adjunct group`, levels = c("Short term", "Medium term", "Long term"))) %>%
+  kable(caption = "\\label{tab:groups}Summary of adjunct groups",  format = "latex", booktabs = T, linesep = "", escape = F) %>%
+  kable_styling(latex_options = c('striped', 'hold_position'))
+
+
+```
+
+
+### Grades
+
+Adjunct instructors awarded higher grades, on average, compared to full-time faculty.   However, the raw average difference, unadjusted for other factors, was modest: 2.5 for adjuncts compared to 2.4 for full-time faculty. 
+
+```{r include = F}
+subd %>%
+  group_by(inst_status) %>%
+  summarize(round(mean(alt_grade),2))
+```
+
+Figure \ref{fig:grades} shows the differences at every grade increment.  The most noticeable differences occurred at 0 and 4, but in general full-time instructors awarded a higher percentage of grades in the 0-3 range, while adjunct instructors awarded more grades at the higher levels of (3.4 - 4).
+
+
+
+
+```{r fig.cap="\\label{fig:grades}Distribution of grades at SLCC by instructor status. Academic classes only, 2011 - 2018."}
+
+subd %>%
+  group_by(inst_status, alt_grade) %>%
+  summarize(count = n()) %>%
+  group_by(inst_status) %>%
+  mutate(total= sum(count),
+         perc = count/total*100) %>%
+  dplyr::select(`Instructor status` =inst_status, alt_grade, count, total, perc) %>%
+  ggplot(aes(alt_grade, perc, fill= `Instructor status`)) +
+  geom_bar(stat="identity", position = "dodge") +
+  labs(x = "Final grades",
+       y = "Percentage") +
+  theme_slcc() +
+  scale_fill_slcc()
+
+```
+
+
+```{r include = F}
+subd %>%
+  group_by(alt_grade,inst_status) %>%
+  summarize(count = n()) %>%
+  group_by(inst_status) %>%
+  mutate(total= sum(count),
+         perc = count/total*100) %>%
+  dplyr::select(inst_status, alt_grade, count, total, perc) %>%
+  group_by(alt_grade) %>%
+  mutate(perc_diff = first(perc) - last(perc)) %>%
+  data.frame 
+```
+
+
+The difference in pass rate---defined here as a numeric grade greater than or equal to 3 \footnote{This definition of passing is obviously not accurate for many courses.  The point here is not to report outcomes precisely but instead to express patterns in grading differences.}---was also higher for adjuncts:  56.4% vs. 51.6%. Curiously, overall summer pass rates were higher than those for Fall or Spring---almost 60% compared to 54% in Fall and Spring---but this was almost exclusively due to the fact that adjuncts taught relatively more in Summer, which, given their tendency to award higher grades, boosted the overall pass rate. 
+
+```{r include = F}
+subd %>%
+  mutate(overall_pass = ifelse(alt_grade>=3, 1, 0)) %>%
+  group_by(inst_status) %>%
+  summarize(pass_rate= mean(overall_pass)*100)
+
+subd %>%
+  mutate(overall_pass = ifelse(alt_grade>=3, 1, 0)) %>%
+  group_by(term) %>%
+  summarize(pass_rate= mean(overall_pass)*100)
+```
+
+While the approximately 5 point difference in pass rates might seem modest, over the 20 terms in the data the number of students whose success in a course was determined by that difference was large in absolute terms.  For example:
+
+- If adjunct instructors had taught and graded all courses then over 7500 students from this dataset would have passed who did not.
+- If full-time instructors had taught and graded all courses then over 13,000 students would not have passed who did. 
+
+```{r include = F}
+subd %>%
+  group_by(inst_status) %>%
+  summarize(total = n(),
+            pass= sum(pass),
+            perc = pass/total) %>%
+  mutate(counterfactual_adj = first(perc)*last(total)-last(pass),
+            counterfactual_full = last(perc)*first(total)-first(pass))
+
+
+```
+
+```{r include = F}
+#Is the summer average higher because of higher proportion of summer teaching by adjuncts?
+pa <- subd %>%
+  mutate(pass = ifelse(alt_grade>=3,1,0)) %>%
+  group_by(term = substr(term_code, 5,6), full_time_ind) %>%
+  summarize(n = n(),
+            pass_rate = mean(pass)) %>%
+  group_by(term) %>%
+  mutate(total = sum(n),
+         perc= n/total) 
+
+boot_df <- data.frame(fall = rep(0, 100), spring = 0, summer = 0)
+
+for(i in 1:100){
+  boot_df$spring[i] <- mean(c(rbinom(n = pa$n[1], size = 1, prob = pa$pass_rate[1]),
+                          rbinom(n = pa$n[2], size = 1, prob = pa$pass_rate[2])))
+  boot_df$summer[i] <- mean(c(rbinom(n = pa$n[3], size = 1, prob = pa$pass_rate[3]),
+                              rbinom(n = pa$n[4], size = 1, prob = pa$pass_rate[4])))
+  boot_df$fall[i] <- mean(c(rbinom(n = pa$n[5], size = 1, prob = pa$pass_rate[5]),
+                              rbinom(n = pa$n[6], size = 1, prob = pa$pass_rate[6])))
+}
+
+median(boot_df$spring)
+median(boot_df$summer)
+median(boot_df$fall)
+
+#the higher proportion of adjuncts in summer inflates the overall
+#pass rate in summer in exactly the degree we expect.
+
+
+```
+
+### Retention into the following semester
+
+Student retention into the next semester is a term-level and not a course-level outcome since students take multiple courses in a term, some from part-time and some from full-time faculty.  The retention rates for students who took more than one course in a term, either all from adjuncts or all from full-time faculty, were similar, but slightly higher for the latter group by about 1.5%.
+  
+```{r include = F}
+# student retention
+subd %>%
+  group_by(student_id, term_code) %>%
+  summarize(courses = n(),
+            gpa = mean(alt_grade, na.rm=T),
+            prop_adj = round(sum(inst_status=="Adjunct")/n(),1),
+            retain = first(ifelse(returned_next_term_ind=="Y", 1, 0))) %>%
+  filter(courses > 1) %>%
+  group_by(prop_adj) %>%
+  summarize(n(),
+            retained = round(mean(retain)*100,1)) %>%
+  filter(prop_adj %in% c(0,  1))
+
+
+
+```
+
+
+
+## Inferential Statistics 
+
+The two most sophisticated empirical studies of student performance related to adjunct instruction---Ran (2017) and Bettinger and Long (2010)---used an instrumental variables (IV) approach to draw causal inferences about adjunct impact on student performance. Ran (2017) writes: students may "sort by different types of instructors within a particular introductory course based on considerations that are also correlated with their academic performance in a particular course. For example a student may take more important courses with tenure faculty and less important courses with nontenured faculty" (p. 21). The instrument used by Ran (2017)  to eliminate the effect of this sorting, following Bettinger and Long (2010), was "term by term variation in different types of instructors in a department" (p. 21). In this  present study an IV approach did not work; the technical requirement that the instrument be uncorrelated with the outcome variables was not satisfied. However, it became clear that for each of our research questions appropriate control variables for student sorting were available, and that the resulting regression models could reasonably support causal interpretation. 
+
+Modeling these student performance outcomes was complicated.  For example, course difficulty influenced grades, while grades also may have influenced retention and graduation. If we want to estimate the relationship between instructor employment status and student grades or retention or graduation, then, we must account for many competing influences.  It was tricky in each case to discover  which of the available variables would control for these influences.
+
+### Grades
+
+Did student grades differ by instructor employment status?  To address this question we fit several multilevel regression models.  
+
+1. The first model was a  variance components  multilevel regression model including course and students as random intercepts.  
+
+2. A second model added a fixed effect for instructor employment status, as well as many other fixed effects conceivably associated with grade performance, along with a random slope for instructor employment status within courses.  This model estimated not only how grading differed by instructor employment status after accounting for other influences on grades but, most importantly, how instructor grading varied by employment status *within* courses. The rationale for  looking at grading variability within courses was that shared rubrics, exams, syllabi, and Canvas pages---teaching materials that would tend to make grading more consistent across instructors---are shared within some courses, but not others.  
+
+This model included the following fixed effects:
+
+- Student demographics (age, gender, ethnicity)
+- Student prior performance (GPA at term start, cumulative earned credits at term start)
+- Instructor demographics (age, gender, ethnicity)
+- Course general education designation
+- Online delivery
+- Term (Summer, Fall Spring)
+
+The first model allowed us to partition variation in student grades:
+
+- 46% of student grade variation was attributable to differences among the students themselves.
+- 11% of student grade variation was attributable to courses.
+
+The second model indicated that faculty employment status had a small but clear effect on student grade performance, as did the third model, which estimated that the grade difference uniquely associated with full time instructors was -.08 [-.11, -.04], indicating that, all things being equal, students of adjuncts received higher grades.\footnote{The numbers in square brackets throughout the paper indicate the 95% confidence interval for the reported point estimate.}  
+
+Grade differences associated with faculty employment status varied by course.  In other words, in particular courses the grade difference was more or less than the overall average difference. This information about course-level differences provides insight into which courses had the largest discrepancy between adjunct and full-time grading, after accounting for other sources of variation, and which might benefit from faculty-wide grade norming, with adjuncts *and* full-time instructors, or developing shared course materials.
+
+
+```{r include = F}
+
+library(lme4)
+library(arm)
+library(broom)
+
+mm1 <- lmer(alt_grade ~ 1 + (1 | class) + (1 | student_id), data = subd)
+summary(mm1)
+
+v <- VarCorr(mm1)
+s2u <- unlist(v)
+s2e <- sigma(mm1)^2
+s2u[1]/(s2u[1] + s2u[2] + s2e)
+s2u[2]/(s2u[1] + s2u[2] + s2e)
+
+
+mm3 <- lmer(alt_grade ~ inst_status + 
+              online +
+             term+
+       gen_ed +
+       instructor_gender +
+       instructor_ethnicity +
+       instructor_age +
+       student_gender +
+       student_ethnicity +
+       student_age_by_term + 
+       prior_ug_credits_ch +
+       prior_ug_gpa_ch + 
+       
+         (1 + inst_status | class) +
+         (1 | student_id), 
+       data = subd)
+
+(tidy(mm3)[2,2]) %>% round(2)
+(tidy(mm3)[2,2] - 1.96*tidy(mm3)[2,3]) %>% round(2)
+(tidy(mm3)[2,2] + 1.96*tidy(mm3)[2,3]) %>% round(2)
+
+```
+
+```{r fig.cap="\\label{fig:multilevel}Model estimated average grades at SLCC, 2011 - 2018."}
+
+se <- se.ranef(mm3)
+re <- ranef(mm3)
+class_var <- data.frame(class = row.names(data.frame(re$class)),
+                          est = data.frame(re$class)[,2],
+                        lower = data.frame(re$class)[,2] - 2*data.frame(se$class)[,2],
+                          upper = data.frame(re$class)[,2] + 2*data.frame(se$class)[,2])
+
+# class_var %>%
+#   mutate(lower = lower -.09) %>%
+#   arrange(desc(lower))
+
+int <- as.numeric(tidy(mm3)[2,2])
+
+class_vec <- subd %>%
+  group_by(class, inst_status) %>%
+  tally %>%
+  filter(n > 1000) %>%
+  group_by(class) %>%
+  mutate(length = length(inst_status)) %>%
+  filter(length==2) %>%
+  group_by(class) %>%
+  summarize(count = sum(n)) %>%
+  filter(count > 2000)
+
+class_var %>%
+  dplyr::filter(class %in% unique(class_vec$class)) %>%
+ggplot(aes(reorder(class, est), est + int)) +
+  geom_point() +
+  geom_errorbar(aes(ymin= lower + int, ymax = upper + int) )+
+  theme_slcc() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Courses",
+       title = "Grade differences by instructor employment status and course",
+       subtitle = "Point estimates and 95% confidence intervals for full-time > adjunct grades",
+       y = "Average grade difference") +
+  geom_hline(lty=2, col=2, yintercept = 0)
+
+# subd %>%
+#   filter(class == "PHIL1000") %>%
+#   group_by(inst_status) %>%
+#   summarize(mean(alt_grade))
+
+# subd %>%
+#   filter(class == "MATH950") %>%
+#   group_by(inst_status) %>%
+#   summarize(mean(alt_grade))
+
+```
+
+Figure \ref{fig:multilevel} displays these differences, for courses with greater than 2000 enrollments since Fall 2011 (and with at least 1000 enrollments taught by both adjuncts and full time instructors).  Negative numbers indicate courses in which adjuncts awarded higher grades and positive numbers indicate courses in which full-time instructors awarded higher grades. The center line, in red, indicates no difference in average course grade. The error bars represent 95% confidence intervals for the grade difference; courses where the error bars do not touch the center line showed a clear difference from the overall average in grades awarded by adjuncts vs. full time.  There were just a handful of courses in which full-time instructors graded higher than adjuncts (positive numbers in the upper right).  In the majority of courses adjuncts graded higher than full-time instructors (negative numbers in the lower left).  
+
+### Retention
+
+Did student next term retention vary by instructor employment status?  This question was not straightforward to answer because students typically took multiple courses in any given term, courses that were taught by a mix of full-time and adjunct instructors. So, to rephrase  the question:  Did the probability of being retained the following semester decrease as the *proportion* of courses taken from adjuncts increased (or vice versa)?  
+
+The main challenge in answering this question was to account for the fact that the group of students taught by adjuncts was quite different from the group taught by full time instructors. Adjunct instructors taught mostly 1000 level courses. The retention of students at this level was generally much lower than at 2000 level,  where full-time instructors taught the majority of courses. The key element in  ensuring a fair comparison between students of adjunct instructors and students of  full-time instructors, then, was to  account for *specific student class schedules in  a given term*. Doing so  guaranteed that students who, say, took English 2010  together with Math 980  in the same term, with some combination of adjunct and full-time instructors, would be compared to one another.    Without this adjustment, it was easy to misunderstand the retention difference  between types of students, associated with the different teaching assignments of adjuncts as compared to full-time instructors, as an adjunct-caused  retention  difference. **Once  we adjusted for specific combinations of classes taken by students then any retention difference between adjuncts and full-time instructors disappeared.**
+
+Course level data was aggregated  to the   term level,  with the proportion of courses taken by adjuncts as the  treatment variable and Fall-Spring retention as the binary outcome. Crucially,  as noted, each student's term course schedule was concatenated as a character variable.  Only Fall terms were included in the data, and only students with a VFA cohort term of Fall 2011 or later were included. Students in the term of graduation were excluded,  since retention for them is obviously not relevant. Furthermore, care was taken to ensure that only courses that had been taught by both adjuncts and full-time instructors were included in the data, and that each particular class schedule was represented by multiple students.  Ultimately there were 25,646 students in the data, some of whom appeared in multiple rows due to enrollment in multiple terms.  
+
+The logistic regression model included the following term-level covariates:
+
+- Student demographics (age, gender, ethnicity)
+- Student performance (GPA at term start, cumulative earned credits at term end)
+- Proportion of courses with general education designation
+- Proportion of online courses
+- Indicator for first term
+- Number of courses taken in the term
+- Class schedule
+
+Term GPA was not included in the model, although in general GPA  seems to be predictive of retention.  In this case GPA was entangled with the proportion of adjunct   instructors a student had in the term.
+
+Note that the  resulting model of retention was very poor.  Simply predicting the majority  class---in this case, that a student would be retained--- produced the correct prediction about 65% of the time; the best machine learning model using this data was able to improve that naive prediction by only about 3%.  Thus, the model sufficed to answer the research question---was instruction by adjuncts associated with lower retention?---but it did not offer much insight into the phenomenon of retention  or have much predictive value. 
+
+```{r include = F}
+#  proportion of adjuncts by class
+
+class_adj <- subd %>%
+  group_by(class) %>%
+  summarize(class_prop_adj = mean(ifelse(inst_status=="Adjunct", 1, 0)))
+
+#  student previous history of retention
+(prev_retention <- subd %>%
+  filter(vfa_cohort_term > 201130) %>%
+  group_by(student_id, term_code) %>%
+  slice(1) %>%
+  group_by(student_id) %>%
+  mutate(term_seq = seq_along(student_id),
+            cum_retain = cumsum(ifelse(returned_next_term_ind=="Y", 1, 0)),
+         prev_retain = c("first", cum_retain[-length(cum_retain)]),
+         prop_retain = cum_retain/term_seq,
+         prev_prop_retain = c("first", round(prop_retain[-length(student_id)],1))) %>%
+   dplyr::select(student_id, term_code, term_seq, prev_retain, prev_prop_retain))
+
+# term level data.
+term_data <- subd %>%
+  filter(term=="Fall",
+         term_code != grad_term,
+         vfa_cohort_term > 201130) %>%
+  left_join(class_adj) %>%
+  group_by(student_id, term_code) %>%
+  arrange(student_id, term_code, class) %>%
+  summarize(classes = paste0(class, collapse=""),
+            gender= first(student_gender),
+            ethnicity = first(student_ethnicity),
+            age= first(student_age_by_term),
+            term_credits = ifelse(all(is.na(credits_earned)),0,
+                                  sum(credits_earned, na.rm=T)),
+            cum_credits = sum(c(first(prior_ug_credits), term_credits), na.rm=T),
+            class_prop_adj = first(class_prop_adj),
+            prior_credits = first(prior_ug_credits_ch),
+            num_classes = length(student_id),
+            prior_ug_gpa = first(prior_ug_gpa_ch),
+            retained = first(ifelse(returned_next_term_ind=="Y",1,0)),
+            prop_adj = mean(ifelse(inst_status == "Adjunct",1,0)),
+            seq_adjunct = paste0(ifelse(inst_status == "Adjunct",1,0), collapse=""),
+            first_term = ifelse(first(term_code)==first(vfa_cohort_term),1,0),
+            avg_online = mean(ifelse(campus=="SLCC Online", 1, 0)),
+            prop_gened = mean(ifelse(gen_ed=="Y",1,0)),
+            grade = mean(alt_grade),
+            grad_term= first(grad_term), 
+            vfa_cohort_term = first(vfa_cohort_term)) %>%
+  left_join(prev_retention, by = c("student_id", "term_code"))
+
+# 68845            
+
+#  class schedules that have neither all adjuncts nor all full-time,  
+# that are also represented more than 10 times in the data
+class_vec <- term_data %>%
+  group_by(classes, term_code) %>%
+  summarize(count = n(),
+            prop_adj = mean(prop_adj)) %>%
+  filter(prop_adj < 1, prop_adj >0, count > 3) %>%
+  group_by(classes) %>%
+  summarize(count= sum(count)) %>%
+  filter(count > 10)
+ 
+#  filter term data by class_vec above,  and filter out  single classes 
+# that were taught only by adjuncts or only by full-time 
+term_data <- term_data %>%
+  filter(classes %in% class_vec$classes,
+         !(num_classes==1 & class_prop_adj==0),
+         !(num_classes==1 & class_prop_adj==1))
+
+# 25646
+
+#  turn previous retention variables into character
+term_data$prev_prop_retain <- paste0("[",term_data$prev_prop_retain,"]")
+term_data$prev_retain <- paste0("[",term_data$prev_retain,"]")
+
+#  simple model
+glm(retained ~ prop_adj , 
+    data = term_data, 
+    family = binomial) %>%
+  tidy
+
+#  model with classes covariate  
+glm(retained ~ prop_adj + 
+      classes, 
+    data = term_data, 
+    family = binomial) %>%
+  tidy #The effect disappears
+
+
+# Full model
+glm(retained ~ prop_adj + 
+      classes +
+      gender +
+      ethnicity +
+      age +
+      num_classes + 
+      prior_credits +
+      prior_ug_gpa +
+      first_term + 
+      avg_online +
+      prop_gened, 
+    data = term_data, 
+    family = binomial) %>%
+  tidy
+
+```
+
+
+### Graduation
+
+Did graduation vary by adjunct teaching?  Graduation is a career-level outcome, so we need to rephrase this question, as we did for retention:  Did the probability of graduating decrease as the proportion of career courses taken from adjuncts increased (or vice versa), all else being equal?  The tricky issue here is how to define "all else being equal."  Because of the distribution of adjunct teaching at SLCC---adjuncts teach more lower level courses---graduating students will have taken relatively fewer courses from adjuncts compared to students who do not graduate, unless we are comparing students with the same number of credits. **After controlling for credits, there was no discernible relationship between graduation and the proportion of classes taught by adjuncts.**
+
+
+The logistic regression model included the following career-level covariates:
+
+- Student demographic variables
+- Cumulative GPA
+- Cumulative credits
+- Cohort year
+
+
+```{r include = F}
+
+# create term level variables then roll up to career level
+(grad_data <- subd %>%
+  filter(vfa_cohort_term > 201130) %>%
+  group_by(student_id, term_code) %>%
+  summarize(vfa_cohort = first(vfa_cohort_term),
+            num_classes = length(student_id),
+            gpa = first(cum_ug_gpa),
+            credits = sum(credits_earned, na.rm=T),
+            grad = ifelse(first(grad_term!=""),1,0),
+            num_adj = sum(ifelse(inst_status=="Adjunct",1,0)),
+            gender = first(student_gender),
+            age = first(student_age_by_term),
+            ethnicity = first(student_ethnicity)) %>%
+  arrange(student_id, term_code)%>%
+  group_by(student_id) %>%
+  mutate(cum_classes = cumsum(num_classes),
+         seq = seq_along(student_id),
+         cum_adj = cumsum(num_adj),
+         prop_adj = cum_adj/cum_classes,
+         cum_credits = cumsum(credits)) %>%
+  group_by(student_id) %>%
+  slice(length(student_id)) %>%
+  ungroup %>%
+  mutate(cum_credits_ch = cut_number(cum_credits, n = 5)))
+
+# double check the calculation of prop_adj
+adj <- subd %>%
+  group_by(student_id) %>%
+  summarize(prop_adj_alt = mean(ifelse(inst_status=="Adjunct",1,0)))
+
+grad_data <- grad_data %>%
+  left_join(adj)
+
+all(grad_data$prop_adj==grad_data$prop_adj_alt)
+
+# Model
+glm(grad ~ prop_adj,
+    data = grad_data,
+    family = binomial) %>%
+  tidy
+
+#  at categorical cumulative credits variable
+glm(grad ~ prop_adj + 
+      cum_credits_ch,
+    data = grad_data,
+    family = binomial) %>%
+  tidy
+
+#  full model
+glm(grad ~ prop_adj + 
+      cum_credits_ch + 
+      gender +
+      age +
+      ethnicity +
+      factor(vfa_cohort),
+    data = grad_data,
+    family = binomial) %>%
+  tidy
+
+
+
+```
+
+
+### Next course performance
+
+Does student performance in a sequence of courses---say, Engl1010 then Engl2010 or MATH1010 then Math1050---vary by the employment status of the first instructor when the second course was taught by a full-time instructor?  This question is trying to get at the issue of learning, independently of grading practice.  Additionally, what effect might adjunct instruction have had on student retention into that second course?  These questions turn out to be tricky.  As we've seen, adjuncts tend to award higher grades, consequently more of their students are *eligible* to take, and therefore do take, the higher course.  But that also means that adjuncts  who taught the first course have more lower ability students in the  second course, which will tend to make it look like their students are underperforming relative to students who took their first course from a full-time instructor. This research was restricted to those students whose first term at SLCC was among those represented in the data so we could be sure a student's enrollment in the first course was a first time enrollment.
+
+The design of this study consisted in focusing on the two common course sequences mentioned above, and compared students who took the first course from either an adjunct instructor or a full-time instructor, but then took second course from a full-time instructor.   The point was to control for grading differences in the second course. The outcome variable was the grade in the second course. Of course, other sequences could have been examined.  The point in this instance was to pick two of the most common sequences in the past 7 years and investigate them for traces of student performance differences related to instructor employment status.
+
+**There was no difference in next course performance between these two groups of students, after correcting for prior GPA (calculated by excluding the grades contributed by the first course) in either Math or English.**  Of course, this comparison was only among students who were retained into the second course.  What about those who, on the one hand, repeated the first course or, on the other, did not repeat and did not continue?  **This behavior--not repeating or not continuing ---was equally distributed by instructor employment status in English but not in Math:  students who took 1010 from a full-time math instructor were about 35% more likely to go on to take a QL course compared to students who took 1010 from an adjunct math instructor.** So, if students did go on to the next math course, the employment status of the 1010 teacher did not seem to impact performance; but significantly more students of adjuncts did not go on.
+
+
+
+```{r, include = F}
+
+# English
+
+#  Calculate GPA without the prior English course
+(non_english_gpa <- subd %>%
+  filter(course_subject != "ENGL") %>%
+  group_by(student_id, term_code) %>%
+  summarize(term_gpa = mean(alt_grade)) %>%
+  group_by(student_id) %>%
+  mutate(cum_gpa_no_engl = round(cummean(term_gpa),1),
+         prev_cum_gpa_no_engl = c("first", cum_gpa_no_engl[-length(cum_gpa_no_engl)])))
+
+#  create a data set with only English courses
+engl <- subd %>%
+  filter(class %in% c("ENGL1010", "ENGL2010", "ENGL2100")) %>%
+  filter(first_term_non_concurrent %in% c(unique(term_code))) %>%
+  left_join(non_english_gpa, by = c("student_id","term_code")) %>%
+  arrange(student_id, term_code) %>%
+  group_by(student_id) %>%
+  mutate(n= n(),
+         term = seq_along(student_id),
+         seq = paste0(class, collapse=""),
+         first_inst = first(inst_status), 
+         first_inst_id = first(instructor_id),
+         engl1010grade = first(alt_grade),
+         prior_gpa = first(prior_ug_gpa_ch),
+         any_2010_2100 = ifelse(any(class=="ENGL2010"), 1, 0),
+         outcome = ifelse(any(class=="ENGL2010" & alt_grade>=3) | any(class=="ENGL2100" & alt_grade>=3), 1, 0)) %>%
+  filter(substr(seq, 1,8) =="ENGL1010") 
+
+#  compare  retention outcomes
+(engl_table <- engl %>% 
+  mutate(path = ifelse(seq=="ENGL1010", "not retained",
+                       ifelse(substr(engl$seq, 1,16)=="ENGL1010ENGL2010" |
+                                substr(engl$seq, 1,16)=="ENGL1010ENGL2100", "continued", "repeated"))) %>%
+  group_by(path, first_inst) %>%
+  summarize(count = n()) %>%
+  group_by(first_inst) %>%
+  mutate(perc = count/sum(count)))
+
+# identical           
+
+#  set up data for regression analysis of next course performance
+next_course_data_engl <- filter(engl, term==2, (seq=="ENGL1010ENGL2010" |seq=="ENGL1010ENGL2100") , 
+                           inst_status=="Full-time")
+
+#  simple model
+lm(alt_grade ~ first_inst ,
+           data = next_course_data_engl) %>%
+  tidy
+
+#  model with GPA control
+lm(alt_grade ~ first_inst + prev_cum_gpa_no_engl,
+   data = next_course_data_engl) %>%
+  tidy
+
+#  full model
+lm(alt_grade ~ first_inst +
+     prev_cum_gpa_no_engl +
+             student_gender + 
+             student_ethnicity +
+             student_age_by_term +
+             instructor_age +
+             instructor_ethnicity +
+             instructor_gender +
+             online + 
+             prior_ug_credits_ch +
+     factor(term_code),
+           data = next_course_data_engl) %>%
+  tidy
+```
+
+
+```{r include = F}
+
+# Math
+
+#  calculate GPA without  previous math
+(non_math_gpa <- subd %>%
+    filter(course_subject != "MATH") %>%
+    group_by(student_id, term_code) %>%
+    summarize(term_gpa = mean(alt_grade)) %>%
+    group_by(student_id) %>%
+    mutate(cum_gpa_no_math = round(cummean(term_gpa),1),
+           prev_cum_gpa_no_math = c("first", cum_gpa_no_math[-length(cum_gpa_no_math)])))
+
+#   create data with only math
+math <- subd %>%
+  filter(class %in% c("MATH1010", "MATH1050", "MATH1030", "MATH1040","MATH1060", 
+                      "MATH1080", "MATH1090", "MATH1210", "MATH2000" )) %>%
+  filter(first_term_non_concurrent %in% c(unique(term_code))) %>%
+  left_join(non_math_gpa, by = c("student_id","term_code")) %>%
+  arrange(student_id, term_code) %>%
+  group_by(student_id) %>%
+  mutate(n= n(),
+         first_term = ifelse(first(term_code==vfa_cohort_term),1,0),
+         term = seq_along(student_id),
+         seq = paste0(class, collapse=""),
+         first_inst = first(inst_status), 
+         first_inst_id = first(instructor_id),
+         math1010grade = first(alt_grade),
+         prior_gpa = first(prior_ug_gpa_ch),
+         gender = first(student_gender),
+         age = first(student_age_by_term),
+         ethnicity = first(student_ethnicity)) %>%
+         filter(substr(seq, 1,8) =="MATH1010") 
+
+#   examine math retention
+(math_table <- math %>% 
+  mutate(path = ifelse(seq=="MATH1010", "not retained",
+                       ifelse(substr(seq, 1,16)== "MATH1010MATH1010", "repeated", "continued"))) %>%
+  filter(term==1) %>%
+  group_by(path, first_inst) %>%
+  summarize(count = n()) %>%
+  group_by(first_inst) %>%
+  mutate(perc = count/sum(count)))  # differences
+
+#  create math data for regression analysis  of retention
+math <- math %>%
+  mutate(seq_outcome = ifelse(seq=="MATH1010" | substr(seq, 1,16)== "MATH1010MATH1010", 0,1))
+
+math %>%
+  filter(term==2) %>%
+  group_by(first_inst, seq_outcome) %>%
+  tally %>%
+  group_by(first_inst) %>%
+  mutate(perc = nn/sum(nn))
+
+#  regression model of  math retention
+glm(seq_outcome ~ first_inst +
+      first_term +
+      gender +
+      age + 
+      ethnicity + 
+      prev_cum_gpa_no_math +
+      instructor_gender +
+      instructor_age +
+      instructor_ethnicity +
+      online +
+      factor(term_code),
+     family = binomial, data = filter(math, term==1)) %>%
+  tidy %>%
+  mutate(estimate = round(estimate,2), std.error = round(std.error,2))
+
+#  data for regression analysis of grade p
+next_course_data_math <- filter(math, term==2, seq=="MATH1010MATH1050",inst_status=="Full-time")
+
+#  simple model
+lm(alt_grade ~ first_inst ,
+   data = next_course_data_math) %>%
+  tidy
+
+#  model with grade control
+lm(alt_grade ~ first_inst + prev_cum_gpa_no_math,
+   data = next_course_data_math) %>%
+  tidy
+
+```
+
+
+## SACM survey of adjunct instructors
+
+A survey of 62 adjunct professors at SLCC was conducted in December 2017 and January 2018 by  the School of Arts Communication and Media. 
+
+Two of the most commonly identified self-reported challenges to delivering effective instruction at SLCC were last-minute scheduling changes and lack of prep time, and poor communication from administration. One adjunct wrote that they are often given less than a week to prep for classes they haven't taught before. In a multiple-choice question later in the survey, 11% of adjuncts said that they received their class assignments less than one week before the start of the semester. 23% said they had less than two weeks, and 23% reported between three and four weeks. 
+
+Many adjuncts also expressed frustration over poor compensation and benefits, lack of recognition from their department and other professors, and inadequate training or lack of training. One wrote that they receive "low pay for the amount of time needed to really prepare and grade the way I want to." Another reported "not feeling like I have any clout after being there many years." 
+
+In a multiple-choice question later in the survey, 13% of respondents said that New Faculty Orientation was "not helpful," and 25% rated it as only "somewhat helpful."" (Not having received a New Faculty Orientation was the most common specific complaint in the comments section for those who selected "not helpful.")
+
+Other notable comments and concerns included lack of job security and longevity, and lack of freedom to adjust course curriculum to fit student needs, and not being on campus enough to keep up with student resources and changes in programs and technology. One adjunct wrote: "there isn't a lot of incentive for adjuncts to remain long term or to improve their skills." Another said: "not knowing if I will have a job the following semester, not knowing if I am doing a good job, not knowing who I go to for concerns within the job.  I feel a little lost out in the abyss and that I am expendable."
+
+Most adjuncts selected that they feel "neither comfortable nor uncomfortable" directing their students to financial aid, advising, health and wellness services resources. They reported feeling on average much more comfortable directing students for help with registration, and to the Disability Resource Center. 
+
+Adjunct instructors also identified inadequate technology and computer resources in the classroom, and diversity of student needs, abilities, and expectations as some of the biggest barriers to quality course delivery. (Obviously, these challenges affect all professors regardless of employment status.) 
+
+In response to a series of questions about the importance of various types of support, most adjuncts said that it was important to have a place to meet students privately, a workstation with a computer and printer, a mentor from full-time faculty, and training and professional development opportunities. The most popular professional development workshops selected from a list of options were "using Canvas effectively," "high-impact teaching practices," and "technology in the classroom."
+
+
+
+
+# Discussion
+
+This study focused on whether SLCC's heavy reliance on adjunct  instruction has  demonstrably impacted student performance outcomes.  There is reason to  worry that it might have. As the  academic literature has indicated, adjunct instructors tend to be less integrated into the institution, often without office hours or institutional email addresses, and often with less teaching experience than full-time instructors. The survey conducted by SACM, furthermore, suggested that adjunct instructors are sometimes hired immediately prior to the semester, with little time for preparation. Thus, the employment conditions of part-time instructors  may not always be conducive to instructional quality. However, despite this, and somewhat surprisingly,  the results from this study suggest that student outcomes associated with adjunct instruction  were little different from outcomes associated with full-time instruction. 
+
+In sum: We saw no difference in retention or graduation, and very modest differences in grades,  associated with instructor employment status. We should note that it would be easy to mistakenly find retention and graduation differences associated with adjunct instruction, simply because the controls necessary to create groups for comparison were obscure and difficult to find. A naïve comparison for both outcomes, for example, showed very large differences in performance outcomes associated with instructor employment status. While next course grade performance in English, from English 1010 to English 2010, did not depend on the employment status of the first course teacher, when the second course teacher was full-time.  Likewise, next course grade  performance in Math,  from Math 1010 to Math 1050,  did not depend on the employment status of the first course teacher.    Moreover, students who took English 1010 from an adjunct instructor  were no less likely  than students of full-time instructors to continue on to English 2010.   The same was not true in  the Math sequence, however. Students who took Math 1010 from an adjunct instructor  were less likely to continue on to 1050 compared to students who took 1010  from a full-time instructor. There were more repeats and more dropouts.
+
+On the whole, then, the news is good. In general, SLCC seems to have benefited from the availability of a highly educated and motivated contingent workforce. Not every community college, one imagines, enjoys this advantage. But with several research universities along the Wasatch Front, there is a ready supply of new PhD's eager to extend their academic career and willing to sacrifice, economically, to remain in academia. In addition, Salt Lake County, being an urban area, with many job opportunities, employs many highly educated workers, who appear also to value the experience of teaching, despite the low pay. Thus, it is likely that one of the reasons  we don't see much of a difference in student performance outcomes related to instructor employment status  is that the adjuncts teaching at SLCC are qualified and motivated.
+
+Adjunct instructors award higher grades. Why would that be? As noted in the beginning of this article, it is difficult with the data available to discern whether the higher grades are a function of better teaching and hence more learning. It could just as well be that adjuncts have a different grading culture than full-time instructors, for the reasons mentioned in the literature review: being contingent, they have an incentive to keep students happy, and thereby receive better teaching evaluations. In the absence of better data, clarifying the source of the grading difference is difficult. However, one element from the study of retention is suggestive.  We found that controlling for term grades was misleading: students who took the majority of their courses from adjuncts had higher grades compared to students who took the majority of their courses from full-time instructors but had a lower likelihood of being retained. This suggests that using grades as a control had the effect of creating groups of students that were in fact not comparable, that had different levels of achievement and motivation. Thus, the difference in grades awarded by adjuncts  may not reflect the quality of instruction; the difference may be cultural, related to the positioning of adjuncts within the institution.  If so,  then departments could ensure consistent grading by conducting faculty-wide---or at least course-specific---grade norming exercises, or by implementing shared exams.  
+
+Research begets questions. Here are recommendations for further research:
+
+- The model of retention  was poor. What  causes a student to return the following semester? What does the academic literature have to say on the topic? What further data could be collected at SLCC  that might contribute to a better model: Registration behavior? Canvas engagement? High school grades for new students? Simultaneous enrollment at other institutions? 
+- What about attrition in the math sequence? Why did the Math sequence seem sensitive to instructor employment status when the English sequence did not?  A more robust investigation of course-to-course attrition might be merited.  The attrition observed in the Math 1010 to Math 1050 sequence alone, if corrected, could substantially impact the rate of QL completion. 
+
+# Recommendations
+
+-  Reliance on adjunct instruction in some courses seems too high. Math and English have managed to bring the percentage of FTE taught by adjuncts down to near the college average. Other departments should strive to follow suit. Rather than essentially outsourcing the teaching of large introductory courses to adjuncts, full-time faculty should engage with adjuncts in the  shared enterprise of teaching these courses. 
+
+- Use course specific grade differences by employment status  to guide grade norming exercises among faculty,  focusing especially on those courses that deviate significantly from the average. Shared exams should be considered.
+
+- Work to ensure that adjunct faculty have sufficient time for course preparation prior to the beginning of classes. This is a courtesy to adjunct instructors, certainly, but, perhaps more importantly, to students.
+
+
+# References
+
+Adamowicz, C. (2007). On Adjunct Labor and Community Colleges. *Academe*, 93(6), 24-27.
+
+Bettinger, E. P., & Long, B. T. (2010). Does cheaper mean better? The impact of using adjunct instructors on student outcomes. *Review of Economics and Statistics*, 92(3), 598–613. http://doi.org/10.1162/REST_a_00014 open
+
+Charlier, H. D., & Williams, M. R. (2011). The Reliance on and Demand for Adjunct Faculty Members in America's Rural, Suburban, and Urban Community Colleges. *Community College Review*, 39(2), 160-180.
+
+Greenberg, I. (2014). Impossible unity:  Adjuncts and tenure-track faculty.  *New Labor Forum*, 23(1), 11-14.
+
+Jaeger, A. J. (2008). Contingent Faculty and Student Outcomes. *Academe*, 94(6), 42-43.
+
+Jaeger, A. J., & Eagan, M. J. (2009). Unintended Consequences: Examining the Effect of Part-Time Faculty Members on Associate's Degree Completion. *Community College Review*, 36(3), 167-194.
+
+Jaeger, A. J., & Eagan, M. K. (2011). Examining Retention and Contingent Faculty Use in a State System of Public Higher Education. *Educational Policy*, 25(3), 507-537.
+
+Landrum, R. E. (2009). Are There Instructional Differences between Full-Time and Part-Time Faculty?. *College Teaching*, 57(1), 23-26.
+
+
+McArthur, R. C. (1999). A comparison of grading patterns between full- and part-time humanities faculty: a preliminary study. *Community College Review*, 27(3), 65-76.
+
+Ran, F. (2017). How and why do adjunct instructors affect students’ academic outcomes? (A CAPSEE working Paper.).
+
+Schneider, A. (1999). To many adjunct professors, academic freedom is a myth. *Chronicle Of Higher Education*, 46(16), A18-A19.
+
+Schuetz, P. (2002). Instructional practices of part-time and full-time faculty. *New Directions For Community Colleges*, (118), 39-46.
+
+Wilson, D. M. (2010). The Casualties of the Twenty-First-Century Community College. *Academe*, 96(3), 12-18.
+

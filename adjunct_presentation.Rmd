@@ -1,0 +1,748 @@
+---
+title: "Adjunct Instruction at SLCC"
+author: Jeff Webb
+date: \today
+
+output:
+  ioslides_presentation:
+    incremental: true
+    widescreen: true
+    #smaller: true
+    css: https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css
+---
+
+
+
+## Purpose
+- Present preliminary findings on adjunct instruction at SLCC.
+- Get feedback from domain experts to inform additional work.
+
+## Introduction
+- Reliance on part-time faculty at community colleges has been increasing for decades as a percentage of total faculty:
+    + 1969: 27%
+    + 1989: 52%
+    + 2007: 70%
+    + 2018: nearly 80% at SLCC
+- Why?  Adjuncts are 80% cheaper than full-time faculty! (In 2007 the percentage of adjuncts at 4-year schools was only 32%.)
+- **Key question**:  Do adjuncts have a different impact on student outcomes than full-time instructors?
+
+
+## Definitions
+
+- **Adjunct**: An instructor on a temporary contract who is limited to part-time instruction during the term of the contract.
+- **Full-time**:  A permanent instructor who teaches full-time.
+- These employment status designations are mutually exclusive within terms and exhaustive:  to my knowledge there are no other possible employment options for instructors at SLCC.
+
+## Key points from the literature {.smaller}
+
+- Compared to full-time faculty, adjuncts:
+    + tend to be less engaged in campus culture and less available to students (Jaeger & Eagan 2009)
+    + are less likely to have an office on campus or a campus email address (Landrum 2009).
+    + have almost half the years of teaching experience (Landrum 2009).
+    + earn substantially less (Greenberg 2014).
+    + have less academic freedom and feel more hostage to student and administrative opinions (Wilson 2010).
+    + have positive impacts on grades earned in introductory courses (Ran 2017)
+    + have negative impacts on subsequent course enrollment and performance (Ran 2017)
+    + increased the number of subsequent classes students took in a given field, especially for fields closely tied to a profession (Bettinger & Long 2010).
+
+
+## Research questions
+
+1. **Description**: What was the nature and scope of adjunct teaching at SLCC?
+2. **Grades**: Did student grades vary by faculty employment status?
+3. **Retention**: Was retention into the next semester different for students who took courses largely from adjunct instructors compared to those who took courses largely from full-time instructors?
+4. **Graduation**: Did students who had a high percentage of adjunct instructors, either in the first year or beyond, graduate at lower rates?
+5.  **Next course performance**: If students took a beginning course from an adjunct instructor was there a subsequent performance difference in the following course?
+
+## Data notes
+
+- Dataset consisted in one row per student course enrollment from fall 2011 through spring 2018, for a total of 20 academic terms.  
+- Vocational enrollments were excluded as well as concurrent enrollments.  
+- Only students in VFA Fall cohorts were included in the data.  
+
+
+# Descriptive Results
+
+
+## Data discrepancy
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=F, warning=F,cache=TRUE)
+
+# packages and data
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(ggthemes)
+
+
+d <- read.csv("TASK0019261 Adjuct Instructor Research-2.txt",
+              header=T, sep="|", stringsAsFactors = F)
+
+names(d) <- tolower(names(d))
+
+d$class <- paste0(d$course_subject, d$course_number)
+
+d$unique_classID <- paste0(d$course_subject, d$course_number,
+                           d$course_section, d$term_code)
+
+# add total enrollment in a particular class to the main data
+d <- d %>%
+  group_by(class) %>%
+  summarize(total_enrollment = n()) %>%
+  left_join(y=d, by="class")
+
+
+# add total enrollment in a particular section to the main data
+d <- d %>%
+  group_by(unique_classID) %>%
+  summarize(total_section_enrollment = n()) %>%
+  left_join(y=d, by="unique_classID")
+
+# Create a new data frame with by filtering and adding features
+subd <- d %>%
+  filter(school != "SAT" &
+           #total_enrollment>3000 &
+           academic_vocational=="Academic Course" &
+           full_time_ind != "U" &
+           instruction_type != "Lab" &
+           instruction_type != "NOT USED - Lab" &
+           substr(term_code, 5,6) != "50" &
+           final_grade != "MC" &
+           final_grade != "NM" &
+           final_grade != "NS" &
+           final_grade != "MG" &
+           final_grade != "P" &
+           final_grade != "") %>%
+  mutate(grad_term = substr(slcc_graduation_term, 1, 6),
+         inst_status = ifelse(full_time_ind == "Y", "Full-time", "Adjunct"),
+         online = ifelse(campus=="SLCC Online", "online", "in-person"),
+         course_level = ifelse(course_number < 1000, "Developmental",
+                               ifelse(course_number >= 1000 & course_number < 2000,
+                                      "1000 level", "2000 level")),
+         course_level = factor(course_level,
+                               levels = c("Developmental", "1000 level", "2000 level")),
+         term = ifelse(substr(term_code, 5,6)=="30", "Summer",
+                       ifelse(substr(term_code, 5,6)=="40", "Fall", "Spring")),
+         term = factor(term, levels = c("Summer", "Fall", "Spring")),
+         prior_ug_gpa_ch = as.character(cut(prior_ug_gpa, breaks = quantile(prior_ug_gpa, probs = seq(0,1, .1), na.rm=T),
+                                                   include.lowest = T)),
+         prior_ug_credits_ch = as.character(cut(prior_ug_credits, breaks = quantile(prior_ug_credits, probs = seq(0,1, .1), na.rm=T),
+                                                   include.lowest = T))) 
+
+
+subd$prior_ug_gpa_ch[is.na(subd$prior_ug_gpa_ch)] <- "none"
+subd$prior_ug_credits_ch[is.na(subd$prior_ug_credits_ch)] <- "none"
+
+# any(is.na(subd$prior_ug_gpa_ch))
+# any(is.na(subd$prior_ug_credits_ch))
+
+# letter grade numeric equivalents
+grades <- data.frame(final_grade = c("A", "A-","B+","B","B-","C+","C",
+                                     "C-","D+","D","D-", "E","W","I"),
+                     alt_grade= c(4,3.7, 3.4,3,2.7,2.4,2,1.7,1.4,1,.7,0,0,0))
+
+# add numeric equivalents to subd data frame
+subd <- subd %>%
+  left_join(grades, by= "final_grade")
+
+# create pass variable set at 3
+subd$pass <- ifelse(subd$alt_grade >= 3, 1, 0)
+
+# Create groups
+# table(d$term_code, d$academic_year)
+
+terms <- data.frame(terms = unique(subd$term_code)) %>% arrange(terms)
+
+instructors <- subd %>%
+  filter(inst_status == "Adjunct") %>%
+  group_by(instructor_id) %>%
+  tally %>%
+  dplyr::select(instructor_id)
+
+instructor_df <- expand.grid(term_code = terms$terms, instructor_id = instructors$instructor_id)
+
+groups <- subd %>%
+  filter(inst_status=="Adjunct") %>%
+  group_by(instructor_id, term_code) %>%
+  tally %>%
+    dplyr::select(-n) %>%
+  arrange(instructor_id, term_code) %>%
+  group_by(instructor_id) %>%
+   mutate(n = seq_along(instructor_id)) %>%
+  right_join(instructor_df, by = c("instructor_id", "term_code")) %>%
+  group_by(instructor_id) %>%
+  mutate(adjunct_group = ifelse(all(is.na(head(n, 2))) & all(is.na(tail(n, 2))) & max(n, na.rm=T)==1, "Short term",
+                                ifelse(all(is.na(head(n, 2))) & all(is.na(tail(n, 2))) & max(n, na.rm=T) > 1 & max(n, na.rm=T) < 6, "Medium term",
+                                       ifelse(max(n, na.rm=T) > 5, "Long term", NA)))) %>%
+  na.omit %>%
+  filter(adjunct_group == "Short term" |
+           adjunct_group=="Medium term" & n > 1 |
+         adjunct_group =="Long term" & n > 5,
+         !(term_code %in% c(201140, 201220,  201820, 201740))) %>%
+  rename(adjunct_group_n = n)
+
+subd <- subd %>%
+  left_join(groups, by = c("instructor_id", "term_code"))
+
+
+
+
+# Plotting functions
+
+theme_slcc <- function(base_size=12) {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2)),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(),
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(0, unit="cm"),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+
+}
+
+scale_fill_slcc <- function(...){
+      library(scales)
+      discrete_scale("fill","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+scale_colour_slcc <- function(...){
+      library(scales)
+      discrete_scale("colour","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+colors=c("#00ABE1", "#FFCD00", "#003865", "#833921")
+
+
+ipeds <- read.csv("ipeds_ft_pt_counts.csv")
+
+
+
+# summary of adjunct teaching in 17-18
+perc_faculty <- d %>%
+  filter(academic_year=="2017-2018",
+         academic_vocational=="Academic Course") %>%
+  group_by(instructor_id, full_time_ind) %>%
+  tally %>%
+  #filter(full_time_ind != "U") %>%
+  group_by(full_time_ind) %>%
+  summarize(count= n()) %>%
+  mutate(perc= round(count/sum(count),2))
+
+percent_students_taught <- d %>%
+  filter(academic_year=="2017-2018",
+         academic_vocational=="Academic Course") %>%
+  group_by(instructor_id, full_time_ind) %>%
+  tally %>%
+  group_by(full_time_ind) %>%
+  summarize(count= sum(n)) %>%
+  mutate(perc= round(count/sum(count),2))
+
+# perc_faculty
+# percent_students_taught
+
+```
+
+
+
+```{r}
+data.frame(Data = c("IPEDS","SLCC IR","IPEDS","SLCC IR","IPEDS","SLCC IR"),
+             Term = c("Fall 2014", "Fall 2014","Fall 2015", "Fall 2015","Fall 2016","Fall 2016"),
+           Fulltime = c(343, 287, 339,300, 335, 294),
+           Parttime = c(1155, 1064, 1271, 1049, 1242, 1040)) %>%
+  dplyr::select(`Data source`=Data, Term, `Full-time`= Fulltime, `Part-time`=Parttime) %>%
+  mutate(Total = `Full-time` + `Part-time`,
+         `% part-time` = round(`Part-time`/Total*100,1)) %>%
+  kable(caption = "Full-time vs. Part-time SLCC faculty by data source, Fall terms 2014 - 2016", escape = F) %>%
+  kable_styling("striped", full_width = T)
+```
+
+## IPEDS data
+
+```{r}
+
+# fig:ipeds
+ipeds %>%
+  mutate(`2016` = pt_2016/(pt_2016 + ft_2016)*100,
+         `2015` = pt_2015/(pt_2015 + ft_2015)*100,
+          `2014` = pt_2014/(pt_2014 + ft_2014)*100) %>%
+  dplyr::select(instnm, `2016`,`2015`,`2014`) %>%
+  gather(year, pt_proportion, -instnm) %>%
+  group_by(year) %>%
+  mutate(slcc = pt_proportion[instnm=="Salt Lake Community College"]) %>%
+  ggplot(aes(pt_proportion)) +
+  geom_histogram(bins=10, fill = colors[1])+
+  geom_vline(aes(xintercept = slcc), col=2, lty = 2) +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(x = "Percentage of part-time faculty",
+       title = "Percentage of part-time faculty at 38 large community colleges",
+       subtitle = "SLCC percentage indicated by the red dashed line",
+       caption = "Data source:  IPEDS") +
+  theme_slcc()
+
+
+```
+
+<!-- ## Adjuncts as percentage of faculty by academic year (IR data) -->
+<!-- ```{r} -->
+
+<!-- subd %>% -->
+<!--   group_by(academic_year, instructor_id, inst_status) %>% -->
+<!--  tally %>% -->
+<!--   filter(!(academic_year %in% c("2011-2012", "2017-2018"))) %>% -->
+<!--   group_by(academic_year, inst_status) %>% -->
+<!--   summarize(n = n()) %>% -->
+<!--   group_by(academic_year) %>% -->
+<!--   mutate(percent = round(n/sum(n)*100,1)) %>% -->
+<!--   filter(inst_status == "Adjunct") %>% -->
+<!--   select(`Academic Year` = academic_year, Percent = percent) %>% -->
+<!--   kable() %>% -->
+<!--   kable_styling("striped")  -->
+
+<!-- ``` -->
+
+## SLCC instructor demographics
+
+```{r}
+# Instructor table
+# fixed characteristics
+
+inst_age_table <- subd %>%
+  distinct(instructor_id, inst_status,instructor_age) %>%
+  group_by(instructor_id, inst_status) %>%
+  summarize(age = mean(instructor_age)) %>%
+  mutate(cat_age = ifelse(age >=10 & age<20, "[10-20)",
+                          ifelse(age >= 20 & age< 30, "[20-30)",
+                                 ifelse(age >=30 & age<40, "[30-40)",
+                                        ifelse(age >=40 &age <50, "[40-50)",
+                                               ifelse(age >=50 & age< 60, "[50-60)",
+                                                      ifelse(age >=60 & age < 70, "[60-70)", ">70")))))),
+         cat_age = factor(cat_age, levels=c("[10-20)","[20-30)", "[30-40)", "[40-50)", "[50-60)", "[60-70)", ">70"))) %>%
+  group_by(cat_age, inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1))
+
+#inst_age_table
+
+# Gender
+inst_gender_table <-subd %>%
+  distinct(instructor_id, inst_status, instructor_gender) %>%
+  group_by(instructor_gender,inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+# inst_gender_table
+
+
+# Ethnicity
+inst_ethnicity_table <-subd %>%
+  distinct(instructor_id, inst_status, instructor_ethnicity) %>%
+  group_by(instructor_ethnicity, inst_status) %>%
+  tally %>%
+  group_by(inst_status) %>%
+  mutate(Percent = round(n/sum(n)*100,1)) #%>%
+  #summarize(sum(n))
+
+# inst_ethnicity_table
+
+# total
+inst_total_table <- subd %>%
+  distinct(instructor_id, inst_status) %>%
+  group_by(inst_status) %>%
+  tally %>%
+  mutate(sum(n))
+
+# inst_total_table
+
+ 
+  eth_table <- inst_ethnicity_table %>%
+  filter(instructor_ethnicity!="Non-Resident Alien") %>%
+   gather(variable, value, -c(instructor_ethnicity, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame 
+  
+  names(eth_table)  <- c("Ethnicity","Count", "Percent", "Count","Percent")
+   
+  eth_table %>%
+    kable() %>%
+  kable_styling("striped", full_width=T) %>%
+  add_header_above(c(" ", "Adjunct" = 2, "Full-time" = 2))
+```
+
+## SLCC instructor demographics  
+  
+```{r}
+
+  gender_table <- inst_gender_table %>%
+  gather(variable, value, -c(instructor_gender, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame
+
+names(gender_table)  <- c("Gender","Count", "Percent", "Count","Percent")
+   
+  gender_table %>%
+    kable() %>%
+  kable_styling("striped", full_width=T) %>%
+  add_header_above(c(" ", "Adjunct" = 2, "Full-time" = 2))
+```
+
+## SLCC instructor demographics  
+
+```{r}
+  age_table <- inst_age_table %>%
+  gather(variable, value, -c(cat_age, inst_status))%>%
+  unite(temp, inst_status, variable) %>%
+  spread(temp,value) %>%
+  unname %>%
+    data.frame
+
+
+ names(age_table) <- c("Age","Count", "Percent", "Count","Percent")
+
+ age_table %>%
+  kable() %>%
+  kable_styling("striped", full_width=T) %>%
+ add_header_above(c(" ", "Adjunct" = 2, "Full-time" = 2))
+```
+
+
+
+## Scope of adjunct teaching at SLCC 
+
+- We can distinguish between the percentage of faculty that are adjunct and the percentage of *student enrollments* taught by adjuncts.   
+- Adjunct faculty taught about 64% of student enrollments on average while full-time faculty taught about 36%.  
+- Class sizes for adjuncts and full-time instructors were comparable, but adjuncts, being part time, taught fewer classes (on average, 2 per term) than did full-time faculty (4 per term). 
+- However, the percentage of student enrollments taught by adjuncts varied by term, with adjuncts teaching about 3% more enrollments in summer.
+- The percentage of student enrollments taught by adjuncts varied by department and course.
+
+## Percentage of Student Enrollments Taught by Adjuncts by Department 
+
+```{r}
+subd %>%
+  group_by(course_subject, inst_status) %>%
+  tally %>%
+  group_by(course_subject) %>%
+  mutate(total = sum(n),
+         perc = round(n/sum(n)*100,1)) %>%
+  arrange(desc(total)) %>%
+  filter(inst_status=="Adjunct")%>%
+   head(9) %>%
+  dplyr::select(Subject=course_subject, Count=n,Percent = perc) %>%
+  kable() %>%
+  kable_styling('striped')
+```
+
+## Percentage of Student Enrollments Taught by Adjuncts by Course 
+
+```{r}
+subd %>%
+  group_by(class, inst_status) %>%
+  tally %>%
+  group_by(class) %>%
+  mutate(total = sum(n),
+         perc = round(n/sum(n)*100,1)) %>%
+  arrange(desc(total)) %>%
+  filter(inst_status=="Adjunct")%>%
+    head(9) %>%
+  dplyr::select(Course=class, Count = n, Percent = perc) %>%
+  kable() %>%
+  kable_styling('striped')
+
+
+```
+
+## Additional differences between adjunct and full-time 
+- Adjuncts taught  66% of the in-person students but only 51% of the online students.
+- Adjuncts also taught almost 70% of the students  enrollments at the 1000-2000 course level, 58% at the developmental level (< 1000), and an even smaller percentage---43%---at the 2000 level.
+- The percentage of course enrollments in general education courses taught by adjuncts approached the overall average.  
+
+## Types of Adjuncts
+
+- I categorized adjuncts into groups based on length of service:
+    + short-term: those who taught only 1 term and did not teach again.
+    + medium-term:  those who taught between 2 and 5 terms and did not teach again.
+    + long-term:  those who taught more than 5 terms.
+
+## Summary of adjunct groups
+
+```{r}
+
+
+subd %>% 
+  filter(!is.na(adjunct_group)) %>%
+  mutate(n = adjunct_group_n) %>%
+  group_by(`Adjunct group` = adjunct_group) %>%
+  summarize(`Minimum terms` = min(n),
+            `Maximum terms` = max(n),
+            `Average terms` = round(mean(n),1),
+            Count = length(unique(instructor_id))) %>%
+  mutate(Percent = round(Count/sum(Count)*100, 1),
+         `Adjunct group` = factor(`Adjunct group`, levels = c("Short term", "Medium term", "Long term"))) %>%
+  kable() %>%
+  kable_styling('striped')
+
+```
+
+## Grades
+
+
+- Adjunct instructors awarded higher grades, on average, compared to full-time faculty. 
+- However, the raw average difference, unadjusted for other factors, was modest: 2.53 for adjuncts compared to 2.39 for full-time faculty. 
+- The most noticeable difference occurred at 0 and 4.
+- Note:  0 includes I, W and E.
+
+## Grades
+
+```{r }
+
+subd %>%
+  group_by(inst_status, alt_grade) %>%
+  summarize(count = n()) %>%
+  group_by(inst_status) %>%
+  mutate(total= sum(count),
+         perc = count/total*100) %>%
+  dplyr::select(`Instructor status` =inst_status, alt_grade, count, total, perc) %>%
+  ggplot(aes(alt_grade, perc, fill= `Instructor status`)) +
+  geom_bar(stat="identity", position = "dodge") +
+  labs(x = "Final grades",
+       y = "Percentage",
+       title = "Distribution of grades by instructor employment status",
+       subtitle = "Academic classes only, 2011 - 2018") +
+  theme_slcc() +
+  scale_fill_slcc()
+
+```
+
+## Pass rate
+
+- Passing:  numeric grade greater than or equal to 3. 
+- Adjuncts had higher pass rates:  56.4% vs. 51.6%. 
+- Summer pass rates were higher than those for Fall or Spring---almost 60% compared to 54%---due to the fact that adjuncts taught relatively more in the Summer.
+- The overall 5 point difference might seem modest, but it was large in absolute terms.
+    + If full-time instructors had used adjunct standards for grading then over 7500 students from this dataset would have passed who did not.
+    + If adjuncts had used the grading standards of full-time instructors then over 13,000 students would not have passed who did.
+    
+# Statistical Results
+
+## Grades
+
+- Did student grades differ by instructor employment status?
+- There were many sources of grade variation---such as the difficulty of the course or the  delivery method---that needed to be disentangled from the variation associated with instructor employment status.
+- **Result**: The average difference in grades uniquely associated with instructor employment status was .07 [.02, .12], with adjuncts awarding slightly higher grades.
+- However, this difference varied significantly by course.
+- Courses with a large difference between full-time and adjunct grading might benefit from faculty-wide grade norming or developing shared course materials.
+
+## Grades 
+
+```{r include = F}
+
+library(lme4)
+library(arm)
+
+mm3 <- lmer(alt_grade ~ online +
+             term+
+       gen_ed +
+       instructor_gender +
+       instructor_ethnicity +
+       instructor_age +
+       student_gender +
+       student_ethnicity +
+       student_age_by_term + 
+       prior_ug_credits_ch +
+       prior_ug_gpa_ch + 
+       inst_status + 
+         (1 + inst_status | class), 
+       data = subset(subd, total_enrollment > 3000))
+
+se <- se.ranef(mm3)
+re <- ranef(mm3)
+class_var <- data.frame(class = row.names(data.frame(re$class)),
+                          est = data.frame(re$class)[,2],
+                        lower = data.frame(re$class)[,2] - 2*data.frame(se$class)[,2],
+                          upper = data.frame(re$class)[,2] + 2*data.frame(se$class)[,2])
+
+
+int <- tail(fixef(mm3),1) 
+```
+
+
+```{r}
+
+ggplot(class_var, aes(reorder(class, est), est + int)) +
+  geom_point() +
+  geom_errorbar(aes(ymin= lower + int, ymax = upper + int) )+
+  theme_slcc() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Courses",
+       title = "Grade differences by instructor employment status and course (> 3000)",
+       subtitle = "Point estimates and 95% confidence intervals for full-time > adjunct grades",
+       y = "Average grade difference") +
+  geom_hline(lty=2, col=2, yintercept = 0)
+
+
+```
+
+
+## Retention
+
+- Did student next term retention vary by instructor employment status?  
+- This question was not straightforward to answer because students typically took multiple courses in any given term taught by a mix of full-time and adjunct instructors. 
+- So, to rephrase:  Did the probability of being retained the following semester change as the proportion of courses taken from adjuncts increased?  
+- This question was difficult to answer because retention itself is pretty random.  This makes it hard to be certain about small sources of variation in retention.
+
+## Retention
+
+```{r include = F}
+
+
+(prev_retention <- subd %>%
+    filter(vfa_cohort_term > 201130) %>%
+  group_by(student_id, term_code) %>%
+  slice(1) %>%
+    group_by(student_id) %>%
+    mutate(term_seq = seq_along(student_id),
+           cum_retain = cumsum(ifelse(returned_next_term_ind=="Y",1,0)),
+           prop_retain = cum_retain/term_seq,
+           prev_retain = c("first term", round(prop_retain[-length(student_id)],1))) %>%
+    dplyr::select(student_id, term_code, term_seq, prev_retain))
+
+
+  
+  # data
+
+returned <- subd %>%
+  filter(vfa_cohort_term > 201130, 
+         term == "Fall") %>%
+  left_join(prev_retention, by = c("student_id", "term_code")) %>%
+   arrange(student_id, term_code) %>%
+  group_by(student_id, term_code) %>%
+  summarize(course_n = n(),
+            first_term = ifelse(all(term_code==vfa_cohort_term),1,0),
+            term = first(term),
+            adjunct = sum(ifelse(full_time_ind=="N", 1, 0)),
+            proportion_adjunct = adjunct/course_n,
+            avg_course_number = mean(course_number),
+            max_course_number = max(course_number),
+            prior_ug_credits = first(prior_ug_credits_ch),
+            math = ifelse(any(course_subject=="MATH"),1,0),
+            english = ifelse(any(course_subject=="ENGL"),1,0),
+            proportion_gened = mean(ifelse(gen_ed=="Y",1,0)),
+            age = first(student_age_by_term),
+            ethnicity = first(student_ethnicity),
+            gender = first(student_gender),
+            retained = first(ifelse(returned_next_term_ind=="Y", 1, 0)), 
+            prior_gpa = first(prior_ug_gpa_ch),
+            term_gpa = mean(alt_grade, na.rm=T),
+            online = mean(ifelse(online=="online",1,0)),
+            term_seq = first(term_seq),
+            prev_retain = paste0("[",first(prev_retain),"]"))
+
+#in first term
+r4 <- glm(retained ~ course_n +first_term*proportion_adjunct +  
+            term_gpa, 
+          family = binomial, 
+          data = returned) 
+
+pred_frame2 <- expand.grid(course_n= 1:6,
+                          proportion_adjunct = c(0,1),
+                          term_gpa = round(quantile(unique(returned$term_gpa), probs = c(0, .2,.4,.6,.8,1)),2),
+                          first_term= c(0,1))
+
+
+
+pred_frame2$pred <- predict(r4, newdata= pred_frame2, type = "response")
+
+pred_frame2$gpa_ch <- paste("GPA:", pred_frame2$term_gpa)
+pred_frame2$adj_ch <- paste("Proportion adjunct:", pred_frame2$proportion_adjunct)
+pred_frame2$first_ch <- paste("First term:", ifelse(pred_frame2$first_term==0, "No","Yes"))
+
+# create probability curves for this result
+```
+
+
+```{r}
+pred_frame2 %>%
+  filter(proportion_adjunct %in% c(0,1)) %>%
+  ggplot(aes(course_n, pred, col = factor(proportion_adjunct))) +
+  geom_line() +
+  facet_grid(first_ch~gpa_ch) +
+  labs(title = "Student retention by term GPA, first term and instructor status",
+       subtitle= "Model predicted probability curves for student retention into spring term",
+       x = "Number of classes taken",
+       y = "Probability of student retention") +
+  guides(col=guide_legend(title="Proportion of classes taught  by adjuncts")) +
+  theme_slcc() +
+  scale_colour_slcc()
+
+``` 
+
+
+## Retention
+
+```{r}
+
+pd <- read.csv("pd_plot.csv")
+
+ggplot(pd, aes(Feature.Value, Partial.Dependence)) +
+  geom_line() + 
+  theme_slcc() + 
+  labs(x = "Proportion of adjuncts",
+       y = "Probability of retention into spring",
+       title = "Partial dependence curve from machine learning model of retention")
+
+```
+
+
+## Retention
+
+- **Result**: The effect of adjunct teaching on retention *appears* to be real, but small, with many countervailing influences.  (I am suspicious, though:  The mechanism for the effect is unknown.)
+- Many students do not take classes from only adjuncts or only full-time instructors, and therefore lie somewhere in between the lines in the Figure.  
+- Compare two average students in their first term: the first took 1 out 4 courses from an adjunct and the second who took 3 out of 4 from an adjunct.
+    + The probability of returning for the next term declines by only about .025 for the second student.
+    + If the same comparison is made after the first term the probability declines by only .015.
+    
+## Graduation
+
+- Did graduation vary by adjunct teaching?  
+- Graduation is a career-level outcome, so we need to be more specific: Did the probability of graduating change as the proportion of career courses taken from adjuncts increased, all else being equal?  
+- The tricky issue here is how to define "all else being equal."  Adjusting for cumulative credits was important.
+- **Result**: There does not appear to be much of a relationship between adjunct instruction and graduation.   
+
+## Next course performance
+
+- Did student performance in a sequence of courses---say, Engl1010 then Engl2010 or MATH1010 then Math1050---vary by the employment status of the first instructor when the second course was taught by a full-time instructor?  
+- This question is trying to get at the issue of learning, independently of grading practice.  
+- Additionally, what effect might adjunct instruction have had on student retention into that second course?  
+- **Result**: Next course performance did not appear to differ much, if at all, by the employment status of the first course instructor.  The estimated effects were small and uncertain.
